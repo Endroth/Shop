@@ -1,0 +1,13 @@
+name: Shop
+main: com.shop.ShopPlugin
+version: 1.0
+api-version: '1.20'
+softdepend: [Vault]
+commands:
+  shop:
+    description: Abre o shop
+    usage: /shop
+permissions:
+  shop.admin:
+    description: Gerenciar o shop
+    default: op
