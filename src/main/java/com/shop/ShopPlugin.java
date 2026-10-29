@@ -176,4 +176,354 @@ public class ShopPlugin extends JavaPlugin implements Listener {
                 msg(p, "§eEscolha a aba e depois o slot onde o item vai ficar.");
                 openMain(p, Mode.ADD);
             }
-            case
+            case "remove" -> {
+                if (args.length >= 2 && args[1].equalsIgnoreCase("aba")) {
+                    openMain(p, Mode.REMOVE_TAB);
+                } else {
+                    openMain(p, Mode.REMOVE);
+                }
+            }
+            case "setprice" -> {
+                if (args.length >= 2) {
+                    Double price = parsePrice(args[1]);
+                    if (price == null) { msg(p, "§cPreço inválido."); return true; }
+                    pendingSetPriceArg.put(p.getUniqueId(), price);
+                }
+                openMain(p, Mode.SETPRICE);
+            }
+            default -> msg(p, "§cUse: /shop, /shop add <preço>, /shop add aba, /shop remove [aba], /shop setprice [preço]");
+        }
+        return true;
+    }
+
+    @Override
+    public List<String> onTabComplete(CommandSender sender, Command cmd, String alias, String[] args) {
+        if (!sender.hasPermission(ADMIN)) return Collections.emptyList();
+        List<String> out = new ArrayList<>();
+        if (args.length == 1) {
+            for (String s : List.of("add", "remove", "setprice"))
+                if (s.startsWith(args[0].toLowerCase())) out.add(s);
+        } else if (args.length == 2) {
+            String a = args[0].toLowerCase();
+            if ((a.equals("add") || a.equals("remove")) && "aba".startsWith(args[1].toLowerCase())) out.add("aba");
+        }
+        return out;
+    }
+
+    // ------------------------------------------------------------------ menus
+
+    private void openMain(Player p, Mode mode) {
+        String title = switch (mode) {
+            case ADD -> "§8Shop » Escolha a aba";
+            case REMOVE -> "§8Shop » Remover item";
+            case SETPRICE -> "§8Shop » Mudar preço";
+            case REMOVE_TAB -> "§8Shop » Remover aba";
+            case ADD_TAB -> "§8Shop » Escolha o slot da aba";
+            default -> "§8Shop";
+        };
+        ShopHolder holder = new ShopHolder(mode, -1);
+        Inventory inv = Bukkit.createInventory(holder, SIZE, title);
+        holder.inv = inv;
+
+        for (Map.Entry<Integer, Tab> e : tabs.entrySet()) {
+            ItemStack it = e.getValue().icon.clone();
+            ItemMeta meta = it.getItemMeta();
+            if (meta != null) {
+                meta.setDisplayName("§e§l" + e.getValue().name);
+                meta.setLore(List.of(mode == Mode.REMOVE_TAB
+                        ? "§cClique para REMOVER esta aba"
+                        : mode == Mode.ADD_TAB
+                        ? "§cSlot ocupado"
+                        : "§7Clique para abrir"));
+                it.setItemMeta(meta);
+            }
+            inv.setItem(e.getKey(), it);
+        }
+        p.openInventory(inv);
+    }
+
+    private void openTab(Player p, int tabSlot, Mode mode) {
+        Tab tab = tabs.get(tabSlot);
+        if (tab == null) return;
+        String title = switch (mode) {
+            case ADD -> "§8Escolha o slot";
+            case REMOVE -> "§8Remover item";
+            case SETPRICE -> "§8Mudar preço";
+            default -> "§8Shop » " + tab.name;
+        };
+        ShopHolder holder = new ShopHolder(mode, tabSlot);
+        Inventory inv = Bukkit.createInventory(holder, SIZE, title);
+        holder.inv = inv;
+
+        for (Map.Entry<Integer, Entry> e : tab.items.entrySet()) {
+            ItemStack it = e.getValue().item.clone();
+            it.setAmount(1);
+            ItemMeta meta = it.getItemMeta();
+            if (meta != null) {
+                List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
+                lore.add("");
+                lore.add("§7Preço (cada): §a" + fmt(e.getValue().price));
+                switch (mode) {
+                    case BROWSE -> { lore.add("§eEsquerdo: escolher quantidade"); lore.add("§eDireito: voltar"); }
+                    case REMOVE -> lore.add("§cClique para remover");
+                    case SETPRICE -> lore.add("§eClique para mudar o preço");
+                    default -> lore.add("§cSlot ocupado");
+                }
+                meta.setLore(lore);
+                it.setItemMeta(meta);
+            }
+            inv.setItem(e.getKey(), it);
+        }
+        p.openInventory(inv);
+    }
+
+    // ------------------------------------------------------------------ eventos
+
+    @EventHandler
+    public void onDrag(InventoryDragEvent e) {
+        if (e.getView().getTopInventory().getHolder() instanceof ShopHolder) e.setCancelled(true);
+    }
+
+    @EventHandler
+    public void onClick(InventoryClickEvent e) {
+        if (!(e.getView().getTopInventory().getHolder() instanceof ShopHolder h)) return;
+        e.setCancelled(true);
+        if (e.getClickedInventory() == null || e.getClickedInventory() != e.getView().getTopInventory()) return;
+        if (!(e.getWhoClicked() instanceof Player p)) return;
+
+        int slot = e.getRawSlot();
+        if (slot < 0 || slot >= SIZE) return;
+
+        if (h.tab == -1) clickMain(p, h, slot);
+        else if (h.mode == Mode.QUANTITY) clickQuantity(p, h, slot);
+        else clickTab(p, h, slot, e.isRightClick());
+    }
+
+    private void clickMain(Player p, ShopHolder h, int slot) {
+        Tab tab = tabs.get(slot);
+
+        if (h.mode == Mode.ADD_TAB) {
+            if (!p.hasPermission(ADMIN)) return;
+            if (tab != null) { msg(p, "§cEsse slot já está ocupado."); return; }
+            ItemStack icon = pendingAddItem.remove(p.getUniqueId());
+            if (icon == null) { p.closeInventory(); return; }
+            String name = niceName(icon);
+            tabs.put(slot, new Tab(name, icon));
+            save();
+            p.closeInventory();
+            msg(p, "§aAba §f" + name + " §acriada no slot " + slot + ".");
+            return;
+        }
+
+        if (tab == null) return;
+
+        if (h.mode == Mode.REMOVE_TAB) {
+            if (!p.hasPermission(ADMIN)) return;
+            tabs.remove(slot);
+            save();
+            msg(p, "§aAba §f" + tab.name + " §aremovida.");
+            openMain(p, Mode.REMOVE_TAB);
+            return;
+        }
+        openTab(p, slot, h.mode);
+    }
+
+    private void clickTab(Player p, ShopHolder h, int slot, boolean right) {
+        Tab tab = tabs.get(h.tab);
+        if (tab == null) { p.closeInventory(); return; }
+        Entry entry = tab.items.get(slot);
+
+        switch (h.mode) {
+            case BROWSE -> {
+                if (right) { openMain(p, Mode.BROWSE); return; }
+                if (entry != null) openQuantity(p, h.tab, slot);
+            }
+            case ADD -> {
+                if (!p.hasPermission(ADMIN)) return;
+                if (entry != null) { msg(p, "§cEsse slot já está ocupado."); return; }
+                ItemStack item = pendingAddItem.remove(p.getUniqueId());
+                Double price = pendingAddPrice.remove(p.getUniqueId());
+                if (item == null || price == null) { p.closeInventory(); return; }
+                item.setAmount(1); // o preço é por unidade
+                tab.items.put(slot, new Entry(item, price));
+                save();
+                p.closeInventory();
+                msg(p, "§aItem adicionado na aba §f" + tab.name + " §apor §f" + fmt(price) + "§a.");
+            }
+            case REMOVE -> {
+                if (!p.hasPermission(ADMIN) || entry == null) return;
+                tab.items.remove(slot);
+                save();
+                msg(p, "§aItem removido.");
+                openTab(p, h.tab, Mode.REMOVE);
+            }
+            case SETPRICE -> {
+                if (!p.hasPermission(ADMIN) || entry == null) return;
+                Double arg = pendingSetPriceArg.remove(p.getUniqueId());
+                if (arg != null) {
+                    entry.price = arg;
+                    save();
+                    msg(p, "§aPreço alterado para §f" + fmt(arg) + "§a.");
+                    openTab(p, h.tab, Mode.SETPRICE);
+                } else {
+                    awaitingChat.put(p.getUniqueId(), new int[]{h.tab, slot});
+                    p.closeInventory();
+                    msg(p, "§eDigite o novo preço no chat (ou §fcancelar§e).");
+                }
+            }
+            default -> { }
+        }
+    }
+
+    @EventHandler
+    public void onChat(AsyncPlayerChatEvent e) {
+        Player p = e.getPlayer();
+        int[] target = awaitingChat.get(p.getUniqueId());
+        if (target == null) return;
+        e.setCancelled(true);
+        String text = e.getMessage().trim();
+
+        Bukkit.getScheduler().runTask(this, () -> {
+            if (text.equalsIgnoreCase("cancelar")) {
+                awaitingChat.remove(p.getUniqueId());
+                msg(p, "§cCancelado.");
+                return;
+            }
+            Double price = parsePrice(text);
+            if (price == null) { msg(p, "§cPreço inválido. Digite um número ou §fcancelar§c."); return; }
+            awaitingChat.remove(p.getUniqueId());
+            Tab tab = tabs.get(target[0]);
+            Entry en = tab == null ? null : tab.items.get(target[1]);
+            if (en == null) { msg(p, "§cItem não existe mais."); return; }
+            en.price = price;
+            save();
+            msg(p, "§aPreço alterado para §f" + fmt(price) + "§a.");
+        });
+    }
+
+    @EventHandler
+    public void onQuit(PlayerQuitEvent e) { clearPending(e.getPlayer()); }
+
+    // ------------------------------------------------------------------ utilidades
+
+    private static final int[] QTY = {1, 8, 16, 32, 64};
+    private static final int[] QTY_SLOTS = {11, 12, 13, 14, 15};
+    private static final int BACK_SLOT = 22;
+
+    private void openQuantity(Player p, int tabSlot, int itemSlot) {
+        Tab tab = tabs.get(tabSlot);
+        Entry en = tab == null ? null : tab.items.get(itemSlot);
+        if (en == null) { p.closeInventory(); return; }
+
+        ShopHolder holder = new ShopHolder(Mode.QUANTITY, tabSlot, itemSlot);
+        Inventory inv = Bukkit.createInventory(holder, SIZE, "§8Quantidade");
+        holder.inv = inv;
+
+        inv.setItem(4, qtyItem(en.item, 1, "§7Preço (cada): §a" + fmt(en.price), "§7Escolha a quantidade abaixo"));
+        for (int i = 0; i < QTY.length; i++) {
+            inv.setItem(QTY_SLOTS[i], qtyItem(en.item, QTY[i],
+                    "§7Quantidade: §f" + QTY[i],
+                    "§7Total: §a" + fmt(en.price * QTY[i]),
+                    "§eClique para comprar"));
+        }
+
+        ItemStack back = new ItemStack(Material.BARRIER);
+        ItemMeta bm = back.getItemMeta();
+        if (bm != null) { bm.setDisplayName("§cVoltar"); back.setItemMeta(bm); }
+        inv.setItem(BACK_SLOT, back);
+
+        p.openInventory(inv);
+    }
+
+    private ItemStack qtyItem(ItemStack base, int amount, String... extra) {
+        ItemStack it = base.clone();
+        it.setAmount(Math.min(amount, 64));
+        ItemMeta meta = it.getItemMeta();
+        if (meta != null) {
+            List<String> lore = meta.hasLore() ? new ArrayList<>(meta.getLore()) : new ArrayList<>();
+            lore.add("");
+            lore.addAll(Arrays.asList(extra));
+            meta.setLore(lore);
+            it.setItemMeta(meta);
+        }
+        return it;
+    }
+
+    private void clickQuantity(Player p, ShopHolder h, int slot) {
+        if (slot == BACK_SLOT) { openTab(p, h.tab, Mode.BROWSE); return; }
+        for (int i = 0; i < QTY_SLOTS.length; i++) {
+            if (QTY_SLOTS[i] != slot) continue;
+            Tab tab = tabs.get(h.tab);
+            Entry en = tab == null ? null : tab.items.get(h.slot);
+            if (en == null) { p.closeInventory(); return; }
+            buy(p, en, QTY[i]);
+            return;
+        }
+    }
+
+    private void buy(Player p, Entry en, int qty) {
+        if (eco == null) { msg(p, "§cEconomia indisponível."); return; }
+        if (!hasSpace(p, en.item, qty)) { msg(p, "§cInventário cheio."); return; }
+        double total = en.price * qty;
+        if (eco.getBalance(p) < total) { msg(p, "§cSaldo insuficiente. Custa " + fmt(total) + "."); return; }
+        eco.withdrawPlayer(p, total);
+
+        int left = qty;
+        while (left > 0) {
+            ItemStack stack = en.item.clone();
+            int n = Math.min(left, stack.getMaxStackSize());
+            stack.setAmount(n);
+            p.getInventory().addItem(stack);
+            left -= n;
+        }
+        msg(p, "§aVocê comprou §f" + qty + "x §apor §f" + fmt(total) + "§a.");
+    }
+
+    private boolean hasSpace(Player p, ItemStack item, int qty) {
+        int max = item.getMaxStackSize();
+        int room = 0;
+        for (ItemStack s : p.getInventory().getStorageContents()) {
+            if (s == null || s.getType().isAir()) room += max;
+            else if (s.isSimilar(item)) room += Math.max(0, max - s.getAmount());
+            if (room >= qty) return true;
+        }
+        return false;
+    }
+
+    private int firstFreeTabSlot() {
+        for (int i = 0; i < SIZE; i++) if (!tabs.containsKey(i)) return i;
+        return -1;
+    }
+
+    private void clearPending(Player p) {
+        UUID id = p.getUniqueId();
+        pendingAddItem.remove(id);
+        pendingAddPrice.remove(id);
+        pendingSetPriceArg.remove(id);
+        awaitingChat.remove(id);
+    }
+
+    private Double parsePrice(String s) {
+        try {
+            double v = Double.parseDouble(s.replace(",", "."));
+            return (v < 0 || Double.isNaN(v) || Double.isInfinite(v)) ? null : v;
+        } catch (NumberFormatException ex) {
+            return null;
+        }
+    }
+
+    private String fmt(double v) {
+        return eco != null ? eco.format(v) : String.format("$%.2f", v);
+    }
+
+    private String niceName(ItemStack item) {
+        ItemMeta m = item.getItemMeta();
+        if (m != null && m.hasDisplayName()) return ChatColor.stripColor(m.getDisplayName());
+        String[] parts = item.getType().name().toLowerCase().split("_");
+        StringBuilder sb = new StringBuilder();
+        for (String s : parts) sb.append(Character.toUpperCase(s.charAt(0))).append(s.substring(1)).append(' ');
+        return sb.toString().trim();
+    }
+
+    private void msg(Player p, String m) { p.sendMessage("§6[Shop] " + m); }
+}
