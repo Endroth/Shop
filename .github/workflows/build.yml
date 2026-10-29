@@ -1,0 +1,29 @@
+name: Build Shop
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Instalar Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+
+      - name: Compilar
+        run: mvn -B package
+
+      - name: Salvar o Shop.jar
+        uses: actions/upload-artifact@v4
+        with:
+          name: Shop
+          path: target/Shop.jar
